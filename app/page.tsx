@@ -42,54 +42,6 @@ type WeatherInfo = {
   icon: string;
 };
 
-const initialEntries: MemoryEntry[] = [
-  {
-    id: 1,
-    title: "Coffee with Sarah",
-    content:
-      "We finally caught up at the new cafe downtown. The latte art was amazing and we talked for hours about our upcoming plans.",
-    dateLabel: "Oct 23, 2023",
-    sticker: {
-      label: "Loved",
-      icon: "favorite",
-      tone: "bg-pink-100 text-pink-600",
-      tilt: "rotate-6",
-    },
-    badges: [
-      { label: "Cafe", icon: "local_cafe", tone: "bg-orange-50 text-orange-700 border border-orange-200/80" },
-      { label: "Friends", icon: "diversity_3", tone: "bg-blue-50 text-blue-700 border border-blue-200/80" },
-    ],
-  },
-  {
-    id: 2,
-    title: "Trip to Kyoto",
-    content:
-      "The autumn leaves are starting to turn. We visited Kinkaku-ji today and it was breathtakingly beautiful.",
-    dateLabel: "Oct 12, 2023",
-    sticker: {
-      label: "Travel",
-      icon: "flight",
-      tone: "bg-violet-100 text-violet-600",
-      tilt: "-rotate-3",
-    },
-    badges: [
-      { label: "Nature", icon: "landscape", tone: "bg-green-50 text-green-700 border border-green-200/80" },
-      { label: "Photos", icon: "photo_camera", tone: "bg-indigo-50 text-indigo-700 border border-indigo-200/80" },
-    ],
-  },
-  {
-    id: 3,
-    title: "Project Launch",
-    content:
-      "After months of hard work, we finally launched the beta version. The team is exhausted but incredibly proud.",
-    dateLabel: "Oct 10, 2023",
-    badges: [
-      { label: "Work", icon: "work", tone: "bg-slate-100 text-slate-700 border border-slate-200/90" },
-      { label: "Win", icon: "emoji_events", tone: "bg-yellow-50 text-yellow-700 border border-yellow-200/80" },
-    ],
-  },
-];
-
 const moodStickers = [
   { title: "Happy", icon: "sentiment_very_satisfied", token: "\u{1F600}", tone: "bg-yellow-50 hover:bg-yellow-100 text-yellow-500" },
   { title: "Calm", icon: "spa", token: "\u{1F9D8}", tone: "bg-blue-50 hover:bg-blue-100 text-blue-500" },
@@ -207,6 +159,30 @@ function readStoredProfile(storageKey: string) {
   }
 }
 
+function readStoredEntries(storageKey: string) {
+  if (typeof window === "undefined") {
+    return [] as MemoryEntry[];
+  }
+  const raw = window.localStorage.getItem(storageKey);
+  if (!raw) {
+    return [] as MemoryEntry[];
+  }
+  try {
+    const parsed = JSON.parse(raw) as MemoryEntry[];
+    if (!Array.isArray(parsed)) {
+      return [] as MemoryEntry[];
+    }
+    return parsed
+      .filter((entry) => entry && typeof entry.id === "number")
+      .map((entry) => ({
+        ...entry,
+        badges: Array.isArray(entry.badges) ? entry.badges : [],
+      }));
+  } catch {
+    return [] as MemoryEntry[];
+  }
+}
+
 function getScannedTitle(text: string) {
   const firstLine =
     text
@@ -222,6 +198,7 @@ function getScannedTitle(text: string) {
 export default function Home() {
   const now = new Date();
   const storageKey = "sticker_journal_profile_v1";
+  const entriesStorageKey = "sticker_journal_entries_v1";
   const inputRef = useRef<HTMLInputElement>(null);
   const scanUploadInputRef = useRef<HTMLInputElement>(null);
   const scanCameraInputRef = useRef<HTMLInputElement>(null);
@@ -235,7 +212,7 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [query, setQuery] = useState("");
-  const [entries, setEntries] = useState<MemoryEntry[]>(initialEntries);
+  const [entries, setEntries] = useState<MemoryEntry[]>(() => readStoredEntries(entriesStorageKey));
   const [mood, setMood] = useState("Feeling Good");
   const [placedImages, setPlacedImages] = useState<PlacedImage[]>([]);
   const [stickyNotes, setStickyNotes] = useState<StickyNote[]>([]);
@@ -252,6 +229,8 @@ export default function Home() {
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const [showStickerTooltip, setShowStickerTooltip] = useState(false);
   const [scanStatus, setScanStatus] = useState("");
+  const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const base = new Date();
     return new Date(base.getFullYear(), base.getMonth(), 1);
@@ -454,6 +433,13 @@ export default function Home() {
   }, [scanMenuOpen]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(entriesStorageKey, JSON.stringify(entries));
+  }, [entries, entriesStorageKey]);
+
+  useEffect(() => {
     const loadWeather = async (lat: number, lon: number) => {
       try {
         const response = await fetch(
@@ -543,11 +529,15 @@ export default function Home() {
   const scanImageAndSave = async (imageSrc: string) => {
     const parsed = imageSrc.match(/^data:(.*?);base64,(.*)$/);
     if (!parsed) {
+      setScanDialogOpen(true);
+      setScanBusy(false);
       setScanStatus("Only local uploaded images can be scanned.");
       return;
     }
     const mimeType = parsed[1];
     const base64 = parsed[2];
+    setScanDialogOpen(true);
+    setScanBusy(true);
     setScanStatus("Scanning image...");
     try {
       const response = await fetch("/api/ocr", {
@@ -560,14 +550,21 @@ export default function Home() {
           error?: string;
           details?: string;
         };
+        setScanBusy(false);
         setScanStatus(failure.error ?? "Gemini OCR failed.");
         return;
       }
       const payload = (await response.json()) as { text?: string };
+      setScanStatus("Creating journal entry...");
       createScannedEntry(payload.text ?? "", imageSrc);
+      setScanBusy(false);
       setScanStatus("Scanned and saved.");
-      window.setTimeout(() => setScanStatus(""), 2200);
+      window.setTimeout(() => {
+        setScanDialogOpen(false);
+        setScanStatus("");
+      }, 1800);
     } catch {
+      setScanBusy(false);
       setScanStatus("Could not scan this image.");
     }
   };
@@ -576,6 +573,10 @@ export default function Home() {
     if (!files || files.length === 0) {
       return;
     }
+
+    setScanDialogOpen(true);
+    setScanBusy(true);
+    setScanStatus("Preparing image...");
 
     Array.from(files).forEach((file) => {
       if (!file.type.startsWith("image/")) {
@@ -1214,6 +1215,36 @@ export default function Home() {
           event.target.value = "";
         }}
       />
+
+      {scanDialogOpen ? (
+        <div className="fixed inset-0 z-[95] bg-slate-900/35 p-4 flex items-center justify-center">
+          <div className="w-full max-w-sm rounded-2xl border border-sky-100 bg-white shadow-xl p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                {scanBusy ? (
+                  <span className="mt-0.5 size-5 rounded-full border-2 border-slate-300 border-t-blue-500 animate-spin" />
+                ) : (
+                  <span className="material-symbols-outlined text-xl text-blue-600">task_alt</span>
+                )}
+                <div>
+                  <h4 className="text-sm font-extrabold text-slate-900">Image Scan Status</h4>
+                  <p className="mt-1 text-sm text-slate-600">{scanStatus || "Starting..."}</p>
+                </div>
+              </div>
+              {!scanBusy ? (
+                <button
+                  type="button"
+                  onClick={() => setScanDialogOpen(false)}
+                  className="size-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                  aria-label="Close scan status"
+                >
+                  <span className="material-symbols-outlined text-base">close</span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {openEntry ? (
         <div
