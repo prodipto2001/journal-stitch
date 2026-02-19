@@ -195,6 +195,39 @@ function getScannedTitle(text: string) {
   return firstLine.length > 64 ? `${firstLine.slice(0, 64).trim()}...` : firstLine;
 }
 
+function buildScannedTemplate(rawText: string) {
+  const cleanedText = rawText
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const lines = cleanedText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const summary = lines.slice(0, 2).join(" ");
+  const highlights = lines.slice(0, 5);
+
+  const content = [
+    "SCANNED JOURNAL",
+    "",
+    "Summary:",
+    summary || "No clear summary detected from the image.",
+    "",
+    "Highlights:",
+    ...(highlights.length > 0
+      ? highlights.map((line) => `- ${line}`)
+      : ["- No highlights detected."]),
+    "",
+    "Extracted Text:",
+    cleanedText || "No readable text found in this image.",
+  ].join("\n");
+
+  return {
+    title: getScannedTitle(cleanedText),
+    content,
+  };
+}
+
 export default function Home() {
   const now = new Date();
   const storageKey = "sticker_journal_profile_v1";
@@ -231,6 +264,9 @@ export default function Home() {
   const [scanStatus, setScanStatus] = useState("");
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
+  const [isEditingEntry, setIsEditingEntry] = useState(false);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [editingContent, setEditingContent] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const base = new Date();
     return new Date(base.getFullYear(), base.getMonth(), 1);
@@ -499,16 +535,12 @@ export default function Home() {
   };
 
   const createScannedEntry = (rawText: string, imageSrc: string) => {
-    const cleanedText = rawText
-      .replace(/\s+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    const hasText = cleanedText.length > 0;
+    const template = buildScannedTemplate(rawText);
     const entryDate = new Date();
     const newEntry: MemoryEntry = {
       id: entryDate.getTime(),
-      title: getScannedTitle(cleanedText),
-      content: hasText ? cleanedText : "No readable text found in this image.",
+      title: template.title,
+      content: template.content,
       dateLabel: formatDateLabel(entryDate),
       images: imageSrc ? [{ src: imageSrc }] : undefined,
       badges: [
@@ -524,6 +556,48 @@ export default function Home() {
     };
     setEntries((prev) => [newEntry, ...prev]);
     setQuery("");
+  };
+
+  const saveOpenEntryEdits = () => {
+    if (!openEntry) {
+      return;
+    }
+    const nextTitle = editingTitle.trim() || "Untitled memory";
+    const nextContent = editingContent.trim() || "No notes added.";
+
+    setEntries((prev) =>
+      prev.map((entry) =>
+        entry.id === openEntry.id
+          ? {
+              ...entry,
+              title: nextTitle,
+              content: nextContent,
+            }
+          : entry,
+      ),
+    );
+    setOpenEntry((prev) =>
+      prev && prev.id === openEntry.id
+        ? {
+            ...prev,
+            title: nextTitle,
+            content: nextContent,
+          }
+        : prev,
+    );
+    setIsEditingEntry(false);
+  };
+
+  const openEntryModal = (entry: MemoryEntry) => {
+    setOpenEntry(entry);
+    setIsEditingEntry(false);
+    setEditingTitle(entry.title);
+    setEditingContent(entry.content);
+  };
+
+  const closeOpenEntryModal = () => {
+    setOpenEntry(null);
+    setIsEditingEntry(false);
   };
 
   const scanImageAndSave = async (imageSrc: string) => {
@@ -1112,7 +1186,7 @@ export default function Home() {
               {filteredEntries.map((entry) => (
                 <article
                   key={entry.id}
-                  onClick={() => setOpenEntry(entry)}
+                  onClick={() => openEntryModal(entry)}
                   className="bg-white rounded-2xl border border-sky-100 p-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer relative group"
                 >
                   {entry.sticker ? (
@@ -1249,7 +1323,7 @@ export default function Home() {
       {openEntry ? (
         <div
           className="fixed inset-0 z-[60] bg-slate-900/40 p-4 md:p-8 flex items-center justify-center"
-          onClick={() => setOpenEntry(null)}
+          onClick={closeOpenEntryModal}
         >
           <div
             className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white border border-slate-100 shadow-xl p-6 md:p-8"
@@ -1258,16 +1332,58 @@ export default function Home() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{openEntry.dateLabel}</p>
-                <h3 className="text-2xl font-extrabold text-slate-900 leading-tight">{openEntry.title}</h3>
+                {isEditingEntry ? (
+                  <input
+                    type="text"
+                    value={editingTitle}
+                    onChange={(event) => setEditingTitle(event.target.value)}
+                    className="w-full text-2xl font-extrabold text-slate-900 leading-tight border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-0"
+                  />
+                ) : (
+                  <h3 className="text-2xl font-extrabold text-slate-900 leading-tight">{openEntry.title}</h3>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => setOpenEntry(null)}
-                className="size-9 rounded-lg border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-slate-50"
-                aria-label="Close journal"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {isEditingEntry ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={saveOpenEntryEdits}
+                      className="h-9 px-3 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-blue-600"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingTitle(openEntry.title);
+                        setEditingContent(openEntry.content);
+                        setIsEditingEntry(false);
+                      }}
+                      className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingEntry(true)}
+                    className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50 inline-flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-base">edit</span>
+                    Edit
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={closeOpenEntryModal}
+                  className="size-9 rounded-lg border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+                  aria-label="Close journal"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 flex gap-2 flex-wrap">
@@ -1309,7 +1425,15 @@ export default function Home() {
               </div>
             ) : null}
 
-            <p className="mt-6 text-slate-700 leading-relaxed whitespace-pre-wrap">{openEntry.content}</p>
+            {isEditingEntry ? (
+              <textarea
+                value={editingContent}
+                onChange={(event) => setEditingContent(event.target.value)}
+                className="mt-6 w-full min-h-[240px] rounded-xl border border-slate-200 p-3 text-slate-700 leading-relaxed whitespace-pre-wrap focus:outline-none focus:ring-0 resize-y"
+              />
+            ) : (
+              <p className="mt-6 text-slate-700 leading-relaxed whitespace-pre-wrap">{openEntry.content}</p>
+            )}
           </div>
         </div>
       ) : null}
