@@ -207,16 +207,30 @@ function readStoredProfile(storageKey: string) {
   }
 }
 
+function getScannedTitle(text: string) {
+  const firstLine =
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "";
+  if (!firstLine) {
+    return "Scanned Memory";
+  }
+  return firstLine.length > 64 ? `${firstLine.slice(0, 64).trim()}...` : firstLine;
+}
+
 export default function Home() {
   const now = new Date();
   const storageKey = "sticker_journal_profile_v1";
   const inputRef = useRef<HTMLInputElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
+  const scanUploadInputRef = useRef<HTMLInputElement>(null);
+  const scanCameraInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const noteDragOffsetRef = useRef({ x: 0, y: 0 });
   const calendarMenuRef = useRef<HTMLDivElement>(null);
+  const scanMenuRef = useRef<HTMLDivElement>(null);
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -229,6 +243,7 @@ export default function Home() {
   const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
   const [openEntry, setOpenEntry] = useState<MemoryEntry | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [scanMenuOpen, setScanMenuOpen] = useState(false);
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(() => readStoredProfile(storageKey) === null);
   const [nameInput, setNameInput] = useState("");
@@ -236,6 +251,7 @@ export default function Home() {
   const [profile, setProfile] = useState<UserProfile | null>(() => readStoredProfile(storageKey));
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const [showStickerTooltip, setShowStickerTooltip] = useState(false);
+  const [scanStatus, setScanStatus] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const base = new Date();
     return new Date(base.getFullYear(), base.getMonth(), 1);
@@ -420,6 +436,24 @@ export default function Home() {
   }, [calendarOpen]);
 
   useEffect(() => {
+    if (!scanMenuOpen) {
+      return;
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (!scanMenuRef.current) {
+        return;
+      }
+      if (!scanMenuRef.current.contains(event.target as Node)) {
+        setScanMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [scanMenuOpen]);
+
+  useEffect(() => {
     const loadWeather = async (lat: number, lon: number) => {
       try {
         const response = await fetch(
@@ -478,34 +512,82 @@ export default function Home() {
     setShowOnboarding(false);
   };
 
-  const addImages = (files: FileList | null) => {
+  const createScannedEntry = (rawText: string, imageSrc: string) => {
+    const cleanedText = rawText
+      .replace(/\s+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    const hasText = cleanedText.length > 0;
+    const entryDate = new Date();
+    const newEntry: MemoryEntry = {
+      id: entryDate.getTime(),
+      title: getScannedTitle(cleanedText),
+      content: hasText ? cleanedText : "No readable text found in this image.",
+      dateLabel: formatDateLabel(entryDate),
+      images: imageSrc ? [{ src: imageSrc }] : undefined,
+      badges: [
+        { label: "Scanned", icon: "document_scanner", tone: "bg-violet-50 text-violet-700 border border-violet-200/80" },
+        { label: "Journal", icon: "auto_stories", tone: "bg-slate-100 text-slate-700 border border-slate-200/90" },
+      ],
+      sticker: {
+        label: "Auto",
+        icon: "auto_awesome",
+        tone: "bg-cyan-100 text-cyan-700",
+        tilt: "-rotate-2",
+      },
+    };
+    setEntries((prev) => [newEntry, ...prev]);
+    setQuery("");
+  };
+
+  const scanImageAndSave = async (imageSrc: string) => {
+    const parsed = imageSrc.match(/^data:(.*?);base64,(.*)$/);
+    if (!parsed) {
+      setScanStatus("Only local uploaded images can be scanned.");
+      return;
+    }
+    const mimeType = parsed[1];
+    const base64 = parsed[2];
+    setScanStatus("Scanning image...");
+    try {
+      const response = await fetch("/api/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mimeType, base64 }),
+      });
+      if (!response.ok) {
+        const failure = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          details?: string;
+        };
+        setScanStatus(failure.error ?? "Gemini OCR failed.");
+        return;
+      }
+      const payload = (await response.json()) as { text?: string };
+      createScannedEntry(payload.text ?? "", imageSrc);
+      setScanStatus("Scanned and saved.");
+      window.setTimeout(() => setScanStatus(""), 2200);
+    } catch {
+      setScanStatus("Could not scan this image.");
+    }
+  };
+
+  const scanFiles = (files: FileList | null) => {
     if (!files || files.length === 0) {
       return;
     }
 
-    Array.from(files).forEach((file, index) => {
+    Array.from(files).forEach((file) => {
       if (!file.type.startsWith("image/")) {
         return;
       }
-
       const reader = new FileReader();
       reader.onload = () => {
         const src = reader.result;
         if (typeof src !== "string") {
           return;
         }
-
-        const offset = (placedImages.length + index) * 18;
-        setPlacedImages((prev) => [
-          ...prev,
-          {
-            id: Date.now() + index,
-            src,
-            x: 24 + offset,
-            y: 24 + offset,
-            width: 180,
-          },
-        ]);
+        void scanImageAndSave(src);
       };
       reader.readAsDataURL(file);
     });
@@ -617,6 +699,42 @@ export default function Home() {
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
+            <div ref={scanMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setScanMenuOpen((prev) => !prev)}
+                className="h-10 px-3 rounded-full border border-slate-200 bg-white text-slate-600 hover:text-primary hover:border-blue-200 text-sm font-semibold transition-colors inline-flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[18px]">document_scanner</span>
+                Scan
+              </button>
+              {scanMenuOpen ? (
+                <div className="absolute right-0 top-full z-[70] mt-3 w-52 rounded-2xl border border-sky-100 bg-white p-2.5 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScanMenuOpen(false);
+                      scanUploadInputRef.current?.click();
+                    }}
+                    className="w-full h-10 px-3 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"
+                  >
+                    <span className="material-symbols-outlined text-[18px] text-blue-600">upload</span>
+                    Upload Image
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScanMenuOpen(false);
+                      scanCameraInputRef.current?.click();
+                    }}
+                    className="mt-1 w-full h-10 px-3 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"
+                  >
+                    <span className="material-symbols-outlined text-[18px] text-violet-600">photo_camera</span>
+                    Click Image
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <div ref={calendarMenuRef} className="relative">
               <button
                 type="button"
@@ -723,6 +841,11 @@ export default function Home() {
                 </div>
               ) : null}
             </div>
+            {scanStatus ? (
+              <span className="hidden xl:inline-flex text-xs font-semibold text-slate-500 whitespace-nowrap">
+                {scanStatus}
+              </span>
+            ) : null}
             <div
               className={`h-9 w-9 rounded-full overflow-hidden ring-2 ring-white cursor-pointer relative bg-gradient-to-br ${getAvatarStyle(profile?.gender ?? "other")} text-white text-xs font-bold flex items-center justify-center`}
               title={profile?.name ?? "Guest"}
@@ -893,14 +1016,6 @@ export default function Home() {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => imageInputRef.current?.click()}
-                          className="size-9 rounded-lg bg-violet-600 text-white inline-flex items-center justify-center hover:bg-violet-500"
-                          title="Add Image"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">image</span>
-                        </button>
-                        <button
-                          type="button"
                           onClick={addStickyNote}
                           className="size-9 rounded-lg text-slate-500 hover:bg-slate-100 inline-flex items-center justify-center"
                           title="Add Sticky Note"
@@ -949,18 +1064,6 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  addImages(event.target.files);
-                  event.target.value = "";
-                }}
-              />
             </div>
           </form>
         </section>
@@ -1088,6 +1191,29 @@ export default function Home() {
           </div>
         </div>
       ) : null}
+
+      <input
+        ref={scanUploadInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          scanFiles(event.target.files);
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={scanCameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(event) => {
+          scanFiles(event.target.files);
+          event.target.value = "";
+        }}
+      />
 
       {openEntry ? (
         <div
