@@ -144,7 +144,12 @@ function readStoredProfile(storageKey: string) {
   if (typeof window === "undefined") {
     return null;
   }
-  const raw = window.localStorage.getItem(storageKey);
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(storageKey);
+  } catch {
+    return null;
+  }
   if (!raw) {
     return null;
   }
@@ -163,7 +168,12 @@ function readStoredEntries(storageKey: string) {
   if (typeof window === "undefined") {
     return [] as MemoryEntry[];
   }
-  const raw = window.localStorage.getItem(storageKey);
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(storageKey);
+  } catch {
+    return [] as MemoryEntry[];
+  }
   if (!raw) {
     return [] as MemoryEntry[];
   }
@@ -472,7 +482,11 @@ export default function Home() {
     if (typeof window === "undefined") {
       return;
     }
-    window.localStorage.setItem(entriesStorageKey, JSON.stringify(entries));
+    try {
+      window.localStorage.setItem(entriesStorageKey, JSON.stringify(entries));
+    } catch {
+      // Ignore storage failures on restricted mobile browsers.
+    }
   }, [entries, entriesStorageKey]);
 
   useEffect(() => {
@@ -529,7 +543,11 @@ export default function Home() {
       name: trimmedName,
       gender: genderInput,
     };
-    window.localStorage.setItem(storageKey, JSON.stringify(nextProfile));
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(nextProfile));
+    } catch {
+      // Ignore storage failures on restricted mobile browsers.
+    }
     setProfile(nextProfile);
     setShowOnboarding(false);
   };
